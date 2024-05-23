@@ -5,6 +5,7 @@ from torchvision import transforms
 import Utility.Visualize as UV
 from Utility.Visualize import show_images
 
+
 def get_fashion_mnist_labels(labels):
     text_label = ['t-shirt', 'trouser', 'pullover', 'dress', 'coat', 'sandal', 'shirt', 'sneaker', 'bag', 'ankle boot']
     return [text_label[int(i)] for i in labels]

@@ -59,7 +59,10 @@ def show_images(imgs, num_rows, num_cols, titles=None, scale=1.5):
     axes = axes.flatten()
     for i, (ax, img) in enumerate(zip(axes, imgs)):
         if torch.is_tensor(img):
-            ax.imshow(img.numpy())
+            if len(img.shape) == 3:
+                ax.imshow((img.numpy()[0] + img.numpy()[1] + img.numpy()[2]) / 3, cmap='gray')
+            else:
+                ax.imshow(img.numpy())
         else:
             ax.imshow(img)
         ax.axes.get_xaxis().set_visible(False)

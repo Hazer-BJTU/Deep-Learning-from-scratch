@@ -8,18 +8,28 @@ from Utility.Accumulator import Accumulator
 from simple_softmax import accuracy
 from Utility.GPU import try_gpu
 from Utility.Animator import Animator
+from CIFAR_TEN import load_data_cifar_10
 
 
-net = nn.Sequential(
-    nn.Conv2d(1, 6, kernel_size=5, padding=2), nn.Sigmoid(),
-    nn.AvgPool2d(kernel_size=2, stride=2),
-    nn.Conv2d(6, 16, kernel_size=5), nn.Sigmoid(),
-    nn.AvgPool2d(kernel_size=2, stride=2),
-    nn.Flatten(),
-    nn.Linear(400, 120), nn.Sigmoid(),
-    nn.Linear(120, 84), nn.Sigmoid(),
-    nn.Linear(84, 10)
-)
+def vgg_net(input_channels, net_args):
+    vgg_blocks = []
+    output_channels = 1
+    for (num_convs, output_channels) in net_args:
+        for _ in range(num_convs):
+            vgg_blocks.append(nn.Conv2d(input_channels, output_channels, kernel_size=3, padding=1))
+            vgg_blocks.append(nn.ReLU())
+            input_channels = output_channels
+        vgg_blocks.append(nn.MaxPool2d(kernel_size=2, stride=2))
+
+    dense = nn.Sequential(nn.Flatten(),
+                          nn.Linear(output_channels * 7 * 7, 4096), nn.ReLU(), nn.Dropout(p=0.5),
+                          nn.Linear(4096, 4096), nn.ReLU(), nn.Dropout(p=0.5),
+                          nn.Linear(4096, 10))
+
+    return nn.Sequential(*vgg_blocks, dense)
+
+
+net = vgg_net(3, ((1, 8), (1, 16), (2, 32), (2, 64), (2, 64)))
 
 
 def evaluate_accuracy_gpu(net, data_iter, device=None):
@@ -45,17 +55,18 @@ def init_weights(m):
         nn.init.xavier_uniform_(m.weight)
 
 
-BATCH_SIZE = 256
+BATCH_SIZE = 128
 num_epochs = 10
-learning_rate = 0.9
+learning_rate = 0.05
 
 if __name__ == '__main__':
-    test_size = torch.randn(1, 1, 28, 28)
+    test_size = torch.randn(1, 3, 224, 224)
     for layer in net:
         test_size = layer(test_size)
         print(layer.__class__.__name__, 'output shape: \t', test_size.shape)
 
-    train_iter, test_iter = load_data_fashion_mnist(batch_size=BATCH_SIZE)
+    # train_iter, test_iter = load_data_fashion_mnist(batch_size=BATCH_SIZE, resize=224)
+    train_iter, test_iter = load_data_cifar_10(batch_size=BATCH_SIZE, resize=224)
 
     net.apply(init_weights)
 

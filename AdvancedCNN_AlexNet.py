@@ -8,10 +8,11 @@ from Utility.Accumulator import Accumulator
 from simple_softmax import accuracy
 from Utility.GPU import try_gpu
 from Utility.Animator import Animator
+from CIFAR_TEN import load_data_cifar_10
 
 
 net = nn.Sequential(
-    nn.Conv2d(1, 96, kernel_size=11, stride=4, padding=1), nn.ReLU(),
+    nn.Conv2d(3, 96, kernel_size=11, stride=4, padding=1), nn.ReLU(),
     nn.MaxPool2d(kernel_size=3, stride=2),
     nn.Conv2d(96, 256, kernel_size=5, padding=2), nn.ReLU(),
     nn.MaxPool2d(kernel_size=3, stride=2),
@@ -53,20 +54,22 @@ def init_weights(m):
 
 BATCH_SIZE = 128
 num_epochs = 10
+learning_rate = 0.01
 
 if __name__ == '__main__':
-    test_size = torch.randn(1, 1, 224, 224)
+    test_size = torch.randn(1, 3, 224, 224)
     for layer in net:
         test_size = layer(test_size)
         print(layer.__class__.__name__, 'output shape: \t', test_size.shape)
 
-    train_iter, test_iter = load_data_fashion_mnist(batch_size=BATCH_SIZE, resize=224)
+    # train_iter, test_iter = load_data_fashion_mnist(batch_size=BATCH_SIZE, resize=224)
+    train_iter, test_iter = load_data_cifar_10(batch_size=BATCH_SIZE, resize=224)
 
     net.apply(init_weights)
 
     device = try_gpu()
     net.to(device)
-    optimizer = torch.optim.SGD(net.parameters(), lr=0.01)
+    optimizer = torch.optim.SGD(net.parameters(), lr=learning_rate)
     loss = nn.CrossEntropyLoss()
     animator = Animator(xlabel='epoch', xlim=[1, num_epochs], legend=['train loss', 'train acc', 'test acc'])
     timer = Utility.Timer.Timer()

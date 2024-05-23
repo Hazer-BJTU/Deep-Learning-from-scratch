@@ -1,6 +1,4 @@
 import numpy as np
-import matplotlib.pyplot as plt
-from sklearn import datasets
+from CIFAR_TEN import load_data_cifar_10
 
-X = np.zeros(5)
-print(X)
+data_iter, test_iter = load_data_cifar_10(128, None)
