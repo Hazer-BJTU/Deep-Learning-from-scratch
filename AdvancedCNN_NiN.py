@@ -11,25 +11,28 @@ from Utility.Animator import Animator
 from CIFAR_TEN import load_data_cifar_10
 
 
-def vgg_net(input_channels, net_args):
-    vgg_blocks = []
-    output_channels = 1
-    for (num_convs, output_channels) in net_args:
-        for _ in range(num_convs):
-            vgg_blocks.append(nn.Conv2d(input_channels, output_channels, kernel_size=3, padding=1))
-            vgg_blocks.append(nn.ReLU())
-            input_channels = output_channels
-        vgg_blocks.append(nn.MaxPool2d(kernel_size=2, stride=2))
+def nin_net(args):
+    layers = []
+    for (in_channels, out_channels, kernel_size, stride, padding) in args:
+        layers.append(nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding))
+        layers.append(nn.ReLU())
 
-    dense = nn.Sequential(nn.Flatten(),
-                          nn.Linear(output_channels * 7 * 7, 4096), nn.ReLU(), nn.Dropout(p=0.5),
-                          nn.Linear(4096, 4096), nn.ReLU(), nn.Dropout(p=0.5),
-                          nn.Linear(4096, 10))
+        layers.append(nn.Conv2d(out_channels, out_channels, kernel_size=1))
+        layers.append(nn.ReLU())
+        layers.append(nn.Conv2d(out_channels, out_channels, kernel_size=1))
+        layers.append(nn.ReLU())
 
-    return nn.Sequential(*vgg_blocks, dense)
+        layers.append(nn.MaxPool2d(kernel_size=3, stride=2))
+
+    return nn.Sequential(*layers, nn.Dropout(p=0.5),
+                         nn.Conv2d(384, 10, kernel_size=3, stride=1, padding=1), nn.ReLU(),
+                         nn.Conv2d(10, 10, kernel_size=1), nn.ReLU(),
+                         nn.Conv2d(10, 10, kernel_size=1), nn.ReLU(),
+                         nn.AdaptiveAvgPool2d((1, 1)),
+                         nn.Flatten())
 
 
-net = vgg_net(3, ((1, 16), (1, 32), (2, 64), (2, 128), (2, 128)))
+net = nin_net(((3, 96, 11, 4, 0), (96, 256, 5, 1, 2), (256, 384, 3, 1, 1)))
 
 
 def evaluate_accuracy_gpu(net, data_iter, device=None):
@@ -57,7 +60,7 @@ def init_weights(m):
 
 BATCH_SIZE = 128
 num_epochs = 10
-learning_rate = 0.05
+learning_rate = 0.5
 
 if __name__ == '__main__':
     test_size = torch.randn(1, 3, 224, 224)

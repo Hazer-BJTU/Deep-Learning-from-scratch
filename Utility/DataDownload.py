@@ -3,6 +3,8 @@ import os
 import tarfile
 import zipfile
 import requests
+import collections
+import re
 
 
 DATA_HUB = dict()
@@ -48,3 +50,19 @@ def download_extract(name, folder=None):
 def download_all():
     for name in DATA_HUB:
         download(name)
+
+
+DATA_HUB['time_machine'] = (DATA_URL + 'timemachine.txt', '090b5e7e70c295757f55df93cb0a180b9691891a')
+
+
+def read_time_machine():
+    with open(download('time_machine'), 'r') as f:
+        lines = f.readlines()
+    return [re.sub('[^A-Za-z]+', ' ', line).strip().lower() for line in lines]
+
+
+if __name__ == '__main__':
+    lines = read_time_machine()
+    print(f'# 文本总行数: {len(lines)}')
+    print(lines[0])
+    print(lines[10])

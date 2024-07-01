@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from torch.nn import functional as func
 
 import Utility.Timer
 import Utility.Visualize as Uv
@@ -11,25 +12,51 @@ from Utility.Animator import Animator
 from CIFAR_TEN import load_data_cifar_10
 
 
-def vgg_net(input_channels, net_args):
-    vgg_blocks = []
-    output_channels = 1
-    for (num_convs, output_channels) in net_args:
-        for _ in range(num_convs):
-            vgg_blocks.append(nn.Conv2d(input_channels, output_channels, kernel_size=3, padding=1))
-            vgg_blocks.append(nn.ReLU())
-            input_channels = output_channels
-        vgg_blocks.append(nn.MaxPool2d(kernel_size=2, stride=2))
+class Residual(nn.Module):
+    def __init__(self, input_channels, num_channels, use_1x1conv=False, strides=1):
+        super(Residual, self).__init__()
+        self.conv1 = nn.Conv2d(input_channels, num_channels, kernel_size=3, padding=1, stride=strides)
+        self.conv2 = nn.Conv2d(num_channels, num_channels, kernel_size=3, padding=1)
+        if use_1x1conv:
+            self.conv3 = nn.Conv2d(input_channels, num_channels, kernel_size=1, stride=strides)
+        else:
+            self.conv3 = None
+        self.bn1 = nn.BatchNorm2d(num_channels)
+        self.bn2 = nn.BatchNorm2d(num_channels)
 
-    dense = nn.Sequential(nn.Flatten(),
-                          nn.Linear(output_channels * 7 * 7, 4096), nn.ReLU(), nn.Dropout(p=0.5),
-                          nn.Linear(4096, 4096), nn.ReLU(), nn.Dropout(p=0.5),
-                          nn.Linear(4096, 10))
+    def forward(self, X):
+        Y = func.relu(self.bn1(self.conv1(X)))
+        Y = self.bn2(self.conv2(Y))
+        if self.conv3:
+            Y += self.conv3(X)
+        else:
+            Y += X
+        return func.relu(Y)
 
-    return nn.Sequential(*vgg_blocks, dense)
+
+def res_net(first_input_channels, args):
+    layers = [nn.Conv2d(first_input_channels, 64, kernel_size=7, stride=2, padding=3),
+              nn.BatchNorm2d(64), nn.ReLU(),
+              nn.MaxPool2d(kernel_size=3, stride=2, padding=1)]
+
+    for (input_channels, num_channels, num_residuals, isfirst) in args:
+        for i in range(num_residuals):
+            if i == 0:
+                if not isfirst:
+                    layers.append(Residual(input_channels, num_channels, use_1x1conv=True, strides=2))
+                else:
+                    layers.append(Residual(input_channels, num_channels))
+            else:
+                layers.append(Residual(num_channels, num_channels))
+
+    return nn.Sequential(*layers,
+                         nn.AdaptiveAvgPool2d((1, 1)),
+                         nn.Flatten(),
+                         nn.Linear(512, 10))
 
 
-net = vgg_net(3, ((1, 16), (1, 32), (2, 64), (2, 128), (2, 128)))
+net = res_net(3, ((64, 64, 2, True), (64, 128, 2, False),
+                  (128, 256, 2, False), (256, 512, 2, False)))
 
 
 def evaluate_accuracy_gpu(net, data_iter, device=None):
@@ -60,13 +87,13 @@ num_epochs = 10
 learning_rate = 0.05
 
 if __name__ == '__main__':
-    test_size = torch.randn(1, 3, 224, 224)
+    test_size = torch.randn(1, 3, 96, 96)
     for layer in net:
         test_size = layer(test_size)
         print(layer.__class__.__name__, 'output shape: \t', test_size.shape)
 
     # train_iter, test_iter = load_data_fashion_mnist(batch_size=BATCH_SIZE, resize=224)
-    train_iter, test_iter = load_data_cifar_10(batch_size=BATCH_SIZE, resize=224)
+    train_iter, test_iter = load_data_cifar_10(batch_size=BATCH_SIZE, resize=96)
 
     net.apply(init_weights)
 
