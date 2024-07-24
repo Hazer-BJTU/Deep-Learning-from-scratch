@@ -16,7 +16,7 @@ def get_mnist_labels(labels):
 
 
 def load_data_cifar_10(batch_size, resize):
-    trans = [transforms.ToTensor(), transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))]
+    trans = [transforms.ToTensor(), transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])]
     if resize:
         trans.insert(0, transforms.Resize(resize))
     trans = transforms.Compose(trans)
