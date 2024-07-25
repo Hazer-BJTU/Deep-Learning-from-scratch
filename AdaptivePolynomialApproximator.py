@@ -98,9 +98,9 @@ def evaluate(net, data_iter, device):
 
 
 if __name__ == '__main__':
-    lr = 0.05
-    num_epoches = 20
-    batch_size = 32
+    lr = 0.001
+    num_epoches = 50
+    batch_size = 64
     weight_decay = 0.001
 
     train_iter, test_iter = load_data_cifar_10(batch_size, resize=None)
@@ -117,7 +117,8 @@ if __name__ == '__main__':
         ApaClassifier(1024, 256, 10, 3, 512)
     )
     net.to(device)
-    optimizer = torch.optim.SGD(net.parameters(), lr=lr, weight_decay=weight_decay)
+    optimizer = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=weight_decay)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 20, 0.85)
     loss = nn.CrossEntropyLoss()
 
     print(f'training on {device}')
@@ -140,3 +141,4 @@ if __name__ == '__main__':
         print(f'epoce: {epoch}, average loss: {total_loss / num_samples:.3f}, '
               f'average train acc: {train_acc / num_samples:.3f}, '
               f'average valid acc: {evaluate(net, test_iter, device):.3f}')
+        scheduler.step()
