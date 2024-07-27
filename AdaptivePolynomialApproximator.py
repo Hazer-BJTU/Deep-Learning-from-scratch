@@ -36,8 +36,9 @@ class AdaptivePolynomialApproximator(nn.Module):
             Xi = batch_quadratic(Xi, self.params[i], X, X.shape[0], self.features, self.features)
             Xi = self.BN(Xi)
             if self.fact_decay:
-                Xi /= math.factorial(i + 1)
-            Y_hat += Xi
+                Y_hat += Xi / math.factorial(i + 1)
+            else:
+                Y_hat += Xi
         if self.clipping:
             Y_hat = self.BN(Y_hat)
         return Y_hat
