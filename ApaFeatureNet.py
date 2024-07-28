@@ -8,6 +8,7 @@ from torch import nn
 from CIFAR_TEN import load_data_cifar_10
 from Utility.GPU import try_gpu
 from AdaptivePolynomialApproximator import AdaptivePolynomialApproximator
+from AdaptivePolynomialApproximator import batch_quadratic
 
 
 def init_weights(m):
@@ -15,68 +16,109 @@ def init_weights(m):
         nn.init.xavier_uniform_(m.weight)
 
 
-class ApaFeatureNet(nn.Module):
+class FeatureExtraction(nn.Module):
     def __init__(self, **kwargs):
-        super(ApaFeatureNet, self).__init__(**kwargs)
-        self.conv1 = nn.Sequential(
+        super(FeatureExtraction, self).__init__(**kwargs)
+        self.conv1_1 = nn.Sequential(
             nn.Conv2d(3, 64, kernel_size=11, stride=1, padding='same'),
-            nn.MaxPool2d(kernel_size=2, stride=2), nn.BatchNorm2d(64),
+            nn.BatchNorm2d(64), nn.ReLU(),
+            nn.MaxPool2d(kernel_size=4, stride=4),
+            nn.Conv2d(64, 128, kernel_size=7, stride=1, padding='same'),
+            nn.BatchNorm2d(128), nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2), nn.Dropout(0.5)
+        )
+        self.conv1_2 = nn.Sequential(
+            nn.Conv2d(128, 128, kernel_size=5, stride=1, padding='same'),
+            nn.BatchNorm2d(128), nn.ReLU(),
+            nn.Conv2d(128, 128, kernel_size=5, stride=1, padding='same'),
+            nn.BatchNorm2d(128), nn.ReLU(),
+            nn.Conv2d(128, 128, kernel_size=5, stride=1, padding='same'),
+            nn.BatchNorm2d(128), nn.ReLU()
+        )
+        self.conv2_1 = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=9, stride=1, padding='same'),
+            nn.BatchNorm2d(64), nn.ReLU(),
+            nn.MaxPool2d(kernel_size=4, stride=4),
             nn.Conv2d(64, 128, kernel_size=5, stride=1, padding='same'),
-            nn.MaxPool2d(kernel_size=2, stride=2), nn.BatchNorm2d(128),
-            nn.Conv2d(128, 128, kernel_size=5, stride=1, padding='same'),
-            nn.MaxPool2d(kernel_size=2, stride=2), nn.BatchNorm2d(128),
-            nn.Conv2d(128, 128, kernel_size=5, stride=1, padding='same'),
-            nn.MaxPool2d(kernel_size=2, stride=2), nn.BatchNorm2d(128),
-            nn.Dropout(0.5),
+            nn.BatchNorm2d(128), nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2), nn.Dropout(0.5)
+        )
+        self.conv2_2 = nn.Sequential(
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding='same'),
+            nn.BatchNorm2d(128), nn.ReLU(),
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding='same'),
+            nn.BatchNorm2d(128), nn.ReLU(),
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding='same'),
+            nn.BatchNorm2d(128), nn.ReLU()
+        )
+        self.pooling = nn.Sequential(
+            nn.AvgPool2d(kernel_size=2, stride=2),
             nn.Flatten()
         )
-        self.conv2 = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=5, stride=1, padding='same'),
-            nn.MaxPool2d(kernel_size=2, stride=2), nn.BatchNorm2d(64),
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding='same'),
-            nn.MaxPool2d(kernel_size=2, stride=2), nn.BatchNorm2d(128),
-            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding='same'),
-            nn.MaxPool2d(kernel_size=2, stride=2), nn.BatchNorm2d(128),
-            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding='same'),
-            nn.MaxPool2d(kernel_size=2, stride=2), nn.BatchNorm2d(128),
-            nn.Dropout(0.5),
-            nn.Flatten()
-        )
+        self.drop_out = nn.Dropout(0.5)
 
+    def forward(self, X):
+        p1 = self.conv1_1(X)
+        f1 = self.pooling(self.conv1_2(p1) + p1)
+        p2 = self.conv2_1(X)
+        f2 = self.pooling(self.conv2_2(p2) + p2)
+        features = torch.cat((f1, f2), dim=1)
+        return self.drop_out(features)
+
+
+class ApaBlock(nn.Module):
+    def __init__(self, input_size, hiddens, rank, **kwargs):
+        super(ApaBlock, self).__init__(**kwargs)
+        self.input_size = input_size
+        self.hiddens = hiddens
+        self.rank = rank
         self.linear1 = nn.Sequential(
-            nn.Linear(1024, 256),
+            nn.Linear(input_size, hiddens),
             nn.Tanh()
         )
         self.linear2 = nn.Sequential(
-            nn.Linear(1024, 256),
+            nn.Linear(input_size, hiddens),
             nn.Tanh()
         )
-        self.APA1 = AdaptivePolynomialApproximator(256, 3)
-        self.APA2 = AdaptivePolynomialApproximator(256, 3)
-        self.APA3 = AdaptivePolynomialApproximator(256, 3)
+        self.params = nn.Parameter(torch.randn(rank, hiddens * hiddens, hiddens))
+        self.BNZ = nn.BatchNorm1d(hiddens)
+        self.BNY = nn.BatchNorm1d(hiddens)
         self.drop_out = nn.Dropout(0.5)
 
-        self.classifier = nn.Sequential(
-            nn.Linear(768, 1024),
+    def forward(self, X):
+        Z = self.linear1(X)
+        Y = self.linear2(X)
+        Zi = Z
+        for i in range(self.rank):
+            Zi = batch_quadratic(Zi, self.params[i], Z, X.shape[0], self.hiddens, self.hiddens)
+            Zi = self.BNZ(Zi)
+            Y = Y + Zi
+        Y = self.BNY(Y)
+        return self.drop_out(Y)
+
+
+class ApaFeatureNet(nn.Module):
+    def __init__(self, **kwargs):
+        super(ApaFeatureNet, self).__init__(**kwargs)
+        self.F = FeatureExtraction()
+        self.APA1 = ApaBlock(1024, 196, 5)
+        self.APA2 = ApaBlock(1024, 196, 5)
+        self.APA3 = ApaBlock(1024, 196, 5)
+        self.dense = nn.Sequential(
+            nn.Linear(588, 1024),
             nn.ReLU(), nn.Dropout(0.5),
             nn.Linear(1024, 1024),
             nn.ReLU(), nn.Dropout(0.5),
-            nn.Linear(1024, 10)
+            nn.Linear(1024, 10),
         )
 
     def forward(self, X):
-        features1 = self.conv1(X)
-        features2 = self.conv2(X)
-        features = torch.cat((features1, features2), dim=1)
-
-        apainput = self.linear1(features)
-        linearout = self.linear2(features)
-        apaout1 = self.drop_out(self.APA1(apainput) + linearout)
-        apaout2 = self.drop_out(self.APA2(apainput) + linearout)
-        apaout3 = self.drop_out(self.APA3(apainput) + linearout)
-        output = torch.cat((apaout1, apaout2, apaout3), dim=1)
-
-        return self.classifier(output)
+        f = self.F(X)
+        apaout1 = self.APA1(f)
+        apaout2 = self.APA2(f)
+        apaout3 = self.APA3(f)
+        apaout = torch.cat((apaout1, apaout2, apaout3), dim=1)
+        return self.dense(apaout)
 
 
 def accuracy(y_hat, y):
@@ -102,7 +144,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='Choose device')
     parser.add_argument('--cuda_idx', type=int, nargs='?', default=0)
-    parser.add_argument('--num_epochs', type=int, nargs='?', default=120)
+    parser.add_argument('--num_epochs', type=int, nargs='?', default=160)
     parser.add_argument('--lr', type=float, nargs='?', default=0.001)
     parser.add_argument('--weight_decay', type=float, nargs='?', default=0.0001)
     parser.add_argument('--batch_size', type=int, nargs='?', default=256)
@@ -117,7 +159,7 @@ if __name__ == '__main__':
     device = try_gpu(args.cuda_idx)
     net.to(device)
     optimizer = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=weight_decay)
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 15, 0.85)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, 20, 0.85)
     loss = nn.CrossEntropyLoss()
 
     best_net, best_valid_acc, info = None, 0.0, []
