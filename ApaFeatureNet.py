@@ -51,9 +51,9 @@ class ApaFeatureNet(nn.Module):
             nn.Linear(1024, 256),
             nn.Tanh()
         )
-        self.APA1 = AdaptivePolynomialApproximator(256, 2)
+        self.APA1 = AdaptivePolynomialApproximator(256, 3)
         self.APA2 = AdaptivePolynomialApproximator(256, 3)
-        self.APA3 = AdaptivePolynomialApproximator(256, 5)
+        self.APA3 = AdaptivePolynomialApproximator(256, 3)
         self.drop_out = nn.Dropout(0.5)
 
         self.classifier = nn.Sequential(
@@ -63,12 +63,12 @@ class ApaFeatureNet(nn.Module):
             nn.ReLU(), nn.Dropout(0.5),
             nn.Linear(1024, 10)
         )
-    
+
     def forward(self, X):
         features1 = self.conv1(X)
         features2 = self.conv2(X)
         features = torch.cat((features1, features2), dim=1)
-        
+
         apainput = self.linear1(features)
         linearout = self.linear2(features)
         apaout1 = self.drop_out(self.APA1(apainput) + linearout)
@@ -99,7 +99,7 @@ def evaluate(net, data_iter, device):
 if __name__ == '__main__':
     net = ApaFeatureNet()
     net.apply(init_weights)
-    
+
     parser = argparse.ArgumentParser(description='Choose device')
     parser.add_argument('--cuda_idx', type=int, nargs='?', default=0)
     parser.add_argument('--num_epochs', type=int, nargs='?', default=120)
@@ -147,7 +147,7 @@ if __name__ == '__main__':
             best_net = copy.deepcopy(net)
             info.append((total_loss / num_samples, train_acc / num_samples, valid_acc))
         scheduler.step()
-    
+
     with open('output.txt', 'w') as file:
         original_stdout = sys.stdout
         sys.stdout = file

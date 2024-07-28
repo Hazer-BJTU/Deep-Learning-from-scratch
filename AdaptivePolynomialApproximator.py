@@ -2,10 +2,8 @@ import torch
 from torch import nn
 import math
 
-import AdvancedCNN_AlexNet
 from CIFAR_TEN import load_data_cifar_10
 from Utility.GPU import try_gpu
-from Fashion_MNIST import load_data_fashion_mnist
 
 
 def batch_quadratic(X1, A, X2, batch_size, input_features, output_features):
@@ -27,20 +25,21 @@ class AdaptivePolynomialApproximator(nn.Module):
         self.clipping = clipping
 
         self.params = nn.Parameter(torch.randn(rank, features * features, features, dtype=dtype))
-        self.BN = nn.BatchNorm1d(features)
+        self.BNX = nn.BatchNorm1d(features)
+        self.BNY = nn.BatchNorm1d(features)
 
     def forward(self, X):
         Y_hat = torch.zeros(X.shape[0], self.features, device=X.device)
         Xi = X
         for i in range(self.rank):
             Xi = batch_quadratic(Xi, self.params[i], X, X.shape[0], self.features, self.features)
-            Xi = self.BN(Xi)
+            Xi = self.BNX(Xi)
             if self.fact_decay:
                 Y_hat += Xi / math.factorial(i + 1)
             else:
                 Y_hat += Xi
         if self.clipping:
-            Y_hat = self.BN(Y_hat)
+            Y_hat = self.BNY(Y_hat)
         return Y_hat
 
 
@@ -101,11 +100,11 @@ def evaluate(net, data_iter, device):
 if __name__ == '__main__':
     lr = 0.001
     num_epoches = 50
-    batch_size = 64
-    weight_decay = 0.001
+    batch_size = 128
+    weight_decay = 0.0001
 
     train_iter, test_iter = load_data_cifar_10(batch_size, resize=None)
-    device = try_gpu()
+    device = try_gpu(0)
     net = nn.Sequential(
         nn.Conv2d(3, 32, kernel_size=5, stride=1, padding='same'),
         nn.MaxPool2d(kernel_size=2, stride=2), nn.BatchNorm2d(32),
