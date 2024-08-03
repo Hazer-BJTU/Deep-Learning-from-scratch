@@ -126,6 +126,31 @@ class ApaBlock(nn.Module):
         return self.outlayer(self.linear3(Y) + self.linear2(X))
 
 
+class ApaFeatureNet(nn.Module):
+    def __init__(self, pretrainPath, device, **kwargs):
+        super(ApaFeatureNet, self).__init__(**kwargs)
+        self.featureExtraction = torch.load(pretrainPath, map_location=device)
+        self.flatten = nn.Flatten()
+        self.APA1 = ApaBlock(1024, 256, 512, 3)
+        self.APA2 = ApaBlock(1024, 256, 512, 3)
+        self.APA3 = ApaBlock(1024, 256, 512, 3)
+        self.classifier = nn.Sequential(
+            nn.Linear(1536, 2048),
+            nn.ReLU(), nn.Dropout(0.25),
+            nn.Linear(2048, 2048),
+            nn.ReLU(), nn.Dropout(0.25),
+            nn.Linear(2048, 100)
+        )
+
+    def forward(self, X):
+        F = self.flatten(self.featureExtraction(X))
+        apaout1 = self.APA1(F)
+        apaout2 = self.APA2(F)
+        apaout3 = self.APA3(F)
+        apaout = torch.cat((apaout1, apaout2, apaout3), dim=1)
+        return self.classifier(apaout)
+
+
 def accuracy(y_hat, y):
     y_hat = y_hat.argmax(axis=1)
     cmp = (y_hat.to(torch.int64) == y)
@@ -148,10 +173,19 @@ def init_weights(m):
         nn.init.xavier_uniform_(m.weight)
 
 
-def train(net, lr, num_epochs, weight_decay, train_iter, valid_iter, device):
+def train(net, lr, num_epochs, weight_decay, train_iter, valid_iter, device, pretrain=False):
     net.to(device)
     net.apply(init_weights)
-    optimizer = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=weight_decay)
+    if pretrain:
+        optimizer = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=weight_decay)
+    else:
+        optimizer = torch.optim.Adam([
+            {'params': net.featureExtraction.parameters(), 'lr': lr / 10},
+            {'params': net.APA1.parameters(), 'lr': lr},
+            {'params': net.APA2.parameters(), 'lr': lr},
+            {'params': net.APA3.parameters(), 'lr': lr},
+            {'params': net.classifier.parameters(), 'lr': lr}
+        ], weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, max(num_epochs // 6, 1), 0.6)
     loss = nn.CrossEntropyLoss()
     best_net, best_valid_acc, info = None, 0, []
@@ -201,11 +235,20 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, nargs='?', default=0.001)
     parser.add_argument('--weight_decay', type=float, nargs='?', default=0.0001)
     parser.add_argument('--batch_size', type=int, nargs='?', default=256)
+    parser.add_argument('--phase', type=int, nargs='?', default=0)
+    parser.add_argument('--model_path', type=str, nargs='?', default='FeatureExtraction.pth')
     args = parser.parse_args()
 
-    net = PreTrainModel()
     train_iter, valid_iter = load_data_cifar_100(args.batch_size, None)
-    best_net, info = train(net, args.lr, args.num_epochs, args.weight_decay,
-                           train_iter, valid_iter, try_gpu(args.cuda_idx))
-    torch.save(net.Feature, 'FeatureExtraction.pth')
-    write_info(info, 'Pretrain_output.txt')
+    if args.phase == 0:
+        net = PreTrainModel()
+        best_net, info = train(net, args.lr, args.num_epochs, args.weight_decay,
+                               train_iter, valid_iter, try_gpu(args.cuda_idx), True)
+        torch.save(net.Feature, 'FeatureExtraction.pth')
+        write_info(info, 'Pretrain_output.txt')
+    else:
+        net2 = ApaFeatureNet(args.model_path, try_gpu(args.cuda_idx))
+        best_net2, info2 = train(net2, args.lr, args.num_epochs, args.weight_decay,
+                                 train_iter, valid_iter, try_gpu(args.cuda_idx))
+        torch.save(net2, 'ApaFeatureNet.pth')
+        write_info(info2, 'train_output.txt')
