@@ -7,8 +7,15 @@ import copy
 from torch import nn
 from CIFAR_100 import load_data_cifar_100
 from Utility.GPU import try_gpu
-from AdaptivePolynomialApproximator import AdaptivePolynomialApproximator
-from AdaptivePolynomialApproximator import batch_quadratic
+
+
+def batch_quadratic(X1, A, X2, batch_size, input_features, output_features):
+    assert X1.shape == X2.shape and X1.shape[1] == input_features
+    assert A.shape[0] == input_features * output_features and A.shape[1] == input_features
+    Y = X1 @ A.T
+    Y = Y.view(batch_size, output_features, input_features)
+    output = torch.bmm(Y, torch.unsqueeze(X2, dim=2))
+    return torch.squeeze(output, dim=2)
 
 
 class ResBlock1(nn.Module):
@@ -59,13 +66,16 @@ class FeatureExtraction(nn.Module):
             nn.MaxPool2d(stride=2, kernel_size=2)
         )
         self.resblocks = nn.Sequential(
+            ResBlock1(256, 256, (5, 5)),
+            ResBlock1(256, 256, (5, 5)),
+            ResBlock2(256, 256, (5, 5)),
             ResBlock1(256, 256, (3, 3)),
             ResBlock1(256, 256, (3, 3)),
             ResBlock2(256, 256, (3, 3)),
             ResBlock1(256, 256, (3, 3)),
             ResBlock1(256, 256, (3, 3)),
             ResBlock2(256, 256, (3, 3)),
-            nn.AvgPool2d(kernel_size=2, stride=2), nn.Dropout(0.25)
+            nn.Dropout(0.25)
         )
 
     def forward(self, X):
@@ -95,60 +105,49 @@ class ApaBlock(nn.Module):
         self.input_size = input_size
         self.hiddens = hiddens
         self.rank = rank
-        self.linear1 = nn.Sequential(
+        self.W1 = nn.Sequential(
             nn.Linear(input_size, hiddens),
-            nn.ReLU(), nn.Dropout(0.25)
+            nn.Tanh()
         )
-        self.linear2 = nn.Sequential(
-            nn.Linear(input_size, output_size),
-            nn.ReLU(), nn.Dropout(0.25)
-        )
-        self.linear3 = nn.Sequential(
-            nn.Linear(hiddens, output_size),
+        self.W2 = nn.Linear(input_size, output_size)
+        self.W3 = nn.Linear(rank * hiddens, output_size)
+        self.output_layer = nn.Sequential(
             nn.ReLU(), nn.Dropout(0.25)
         )
         self.params = nn.Parameter(torch.randn(rank, hiddens * hiddens, hiddens))
         self.BNZ = nn.BatchNorm1d(hiddens)
-        self.BNY = nn.BatchNorm1d(hiddens)
-        self.outlayer = nn.Sequential(
-            nn.ReLU(), nn.Dropout(0.25)
-        )
 
     def forward(self, X):
-        Z = self.linear1(X)
+        Z = self.W1(X)
         Zi = Z
-        Y = torch.zeros(X.shape[0], self.hiddens, device=X.device)
+        output = None
         for i in range(self.rank):
             Zi = batch_quadratic(Zi, self.params[i], Z, X.shape[0], self.hiddens, self.hiddens)
             Zi = self.BNZ(Zi)
-            Y = Y + (Zi / self.rank)
-        Y = self.BNY(Y)
-        return self.outlayer(self.linear3(Y) + self.linear2(X))
+            if output is None:
+                output = Zi
+            else:
+                output = torch.cat((output, Zi), dim=1)
+        return self.output_layer(self.W2(X) + self.W3(output))
 
 
 class ApaFeatureNet(nn.Module):
     def __init__(self, pretrainPath, device, **kwargs):
         super(ApaFeatureNet, self).__init__(**kwargs)
-        self.featureExtraction = torch.load(pretrainPath, map_location=device)
+        self.featureExtraction = torch.load(pretrainPath, map_location=device, weights_only=False)
         self.flatten = nn.Flatten()
-        self.APA1 = ApaBlock(1024, 256, 512, 3)
-        self.APA2 = ApaBlock(1024, 256, 512, 3)
-        self.APA3 = ApaBlock(1024, 256, 512, 3)
+        self.APA = ApaBlock(1024, 128, 1024, 5)
         self.classifier = nn.Sequential(
-            nn.Linear(1536, 2048),
+            nn.Linear(1024, 1536),
             nn.ReLU(), nn.Dropout(0.25),
-            nn.Linear(2048, 2048),
+            nn.Linear(1536, 1536),
             nn.ReLU(), nn.Dropout(0.25),
-            nn.Linear(2048, 100)
+            nn.Linear(1536, 100)
         )
 
     def forward(self, X):
         F = self.flatten(self.featureExtraction(X))
-        apaout1 = self.APA1(F)
-        apaout2 = self.APA2(F)
-        apaout3 = self.APA3(F)
-        apaout = torch.cat((apaout1, apaout2, apaout3), dim=1)
-        return self.classifier(apaout)
+        return self.classifier(self.APA(F))
 
 
 def accuracy(y_hat, y):
@@ -173,19 +172,9 @@ def init_weights(m):
         nn.init.xavier_uniform_(m.weight)
 
 
-def train(net, lr, num_epochs, weight_decay, train_iter, valid_iter, device, pretrain=False):
+def train(net, lr, num_epochs, weight_decay, train_iter, valid_iter, device):
     net.to(device)
-    net.apply(init_weights)
-    if pretrain:
-        optimizer = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=weight_decay)
-    else:
-        optimizer = torch.optim.Adam([
-            {'params': net.featureExtraction.parameters(), 'lr': lr / 10},
-            {'params': net.APA1.parameters(), 'lr': lr},
-            {'params': net.APA2.parameters(), 'lr': lr},
-            {'params': net.APA3.parameters(), 'lr': lr},
-            {'params': net.classifier.parameters(), 'lr': lr}
-        ], weight_decay=weight_decay)
+    optimizer = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, max(num_epochs // 6, 1), 0.6)
     loss = nn.CrossEntropyLoss()
     best_net, best_valid_acc, info = None, 0, []
@@ -231,24 +220,32 @@ def write_info(info, fileName):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Choose device')
     parser.add_argument('--cuda_idx', type=int, nargs='?', default=0)
-    parser.add_argument('--num_epochs', type=int, nargs='?', default=240)
+    parser.add_argument('--num_epochs', type=int, nargs='?', default=300)
     parser.add_argument('--lr', type=float, nargs='?', default=0.001)
     parser.add_argument('--weight_decay', type=float, nargs='?', default=0.0001)
     parser.add_argument('--batch_size', type=int, nargs='?', default=256)
     parser.add_argument('--phase', type=int, nargs='?', default=0)
     parser.add_argument('--model_path', type=str, nargs='?', default='FeatureExtraction.pth')
+    parser.add_argument('--model_path2', type=str, nargs='?', default='ApaFeatureNet.pth')
     args = parser.parse_args()
 
     train_iter, valid_iter = load_data_cifar_100(args.batch_size, None)
     if args.phase == 0:
         net = PreTrainModel()
+        net.apply(init_weights)
         best_net, info = train(net, args.lr, args.num_epochs, args.weight_decay,
-                               train_iter, valid_iter, try_gpu(args.cuda_idx), True)
+                               train_iter, valid_iter, try_gpu(args.cuda_idx))
         torch.save(net.Feature, 'FeatureExtraction.pth')
         write_info(info, 'Pretrain_output.txt')
-    else:
+    elif args.phase == 1:
         net2 = ApaFeatureNet(args.model_path, try_gpu(args.cuda_idx))
-        best_net2, info2 = train(net2, args.lr, args.num_epochs, args.weight_decay,
+        best_net2, info2 = train(net2, args.lr / 3, args.num_epochs // 3, args.weight_decay,
                                  train_iter, valid_iter, try_gpu(args.cuda_idx))
         torch.save(net2, 'ApaFeatureNet.pth')
         write_info(info2, 'train_output.txt')
+    else:
+        net3 = torch.load(args.model_path2, map_location=try_gpu(args.cuda_idx))
+        best_net3, info3 = train(net3, args.lr / 50, args.num_epochs // 3, args.weight_decay,
+                                 train_iter, valid_iter, try_gpu(args.cuda_idx))
+        torch.save(net3, 'ApaFeatureNet.pth')
+        write_info(info3, 'train_output.txt')
