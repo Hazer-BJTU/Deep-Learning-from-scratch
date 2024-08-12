@@ -7,7 +7,7 @@ import torchvision
 import shutil, os
 from torchvision import transforms
 from torch.utils import data
-from ApaFeatureNet import ApaFeatureNet
+from SparseIntegratedBlock import ApaFeatureNet
 from AdaptivePolynomialApproximator import evaluate
 from CIFAR_TEN import load_data_cifar_10
 from PIL import Image

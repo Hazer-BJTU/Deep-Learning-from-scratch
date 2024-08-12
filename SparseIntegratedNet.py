@@ -7,15 +7,7 @@ import copy
 from torch import nn
 from CIFAR_100 import load_data_cifar_100
 from Utility.GPU import try_gpu
-
-
-def batch_quadratic(X1, A, X2, batch_size, input_features, output_features):
-    assert X1.shape == X2.shape and X1.shape[1] == input_features
-    assert A.shape[0] == input_features * output_features and A.shape[1] == input_features
-    Y = X1 @ A.T
-    Y = Y.view(batch_size, output_features, input_features)
-    output = torch.bmm(Y, torch.unsqueeze(X2, dim=2))
-    return torch.squeeze(output, dim=2)
+import SparseIntegratedBlock
 
 
 class ResBlock1(nn.Module):
@@ -59,16 +51,16 @@ class FeatureExtraction(nn.Module):
     def __init__(self, **kwargs):
         super(FeatureExtraction, self).__init__(**kwargs)
         self.conv = nn.Sequential(
-            nn.Conv2d(3, 128, 9, stride=1, padding='same'),
+            nn.Conv2d(3, 128, 3, stride=1, padding='same'),
             nn.BatchNorm2d(128),
-            nn.Conv2d(128, 256, 5, stride=1, padding='same'),
+            nn.Conv2d(128, 256, 3, stride=1, padding='same'),
             nn.BatchNorm2d(256),
             nn.MaxPool2d(stride=2, kernel_size=2)
         )
         self.resblocks = nn.Sequential(
-            ResBlock1(256, 256, (5, 5)),
-            ResBlock1(256, 256, (5, 5)),
-            ResBlock2(256, 256, (5, 5)),
+            ResBlock1(256, 256, (3, 3)),
+            ResBlock1(256, 256, (3, 3)),
+            ResBlock2(256, 256, (3, 3)),
             ResBlock1(256, 256, (3, 3)),
             ResBlock1(256, 256, (3, 3)),
             ResBlock2(256, 256, (3, 3)),
@@ -99,45 +91,16 @@ class PreTrainModel(nn.Module):
         return self.Classifier(self.Feature(X))
 
 
-class ApaBlock(nn.Module):
-    def __init__(self, input_size, hiddens, output_size, rank, **kwargs):
-        super(ApaBlock, self).__init__(**kwargs)
-        self.input_size = input_size
-        self.hiddens = hiddens
-        self.rank = rank
-        self.W1 = nn.Sequential(
-            nn.Linear(input_size, hiddens),
-            nn.Tanh()
-        )
-        self.W2 = nn.Linear(input_size, output_size)
-        self.W3 = nn.Linear(rank * hiddens, output_size)
-        self.output_layer = nn.Sequential(
-            nn.ReLU(), nn.Dropout(0.25)
-        )
-        self.params = nn.Parameter(torch.randn(rank, hiddens * hiddens, hiddens))
-        self.BNZ = nn.BatchNorm1d(hiddens)
-
-    def forward(self, X):
-        Z = self.W1(X)
-        Zi = Z
-        output = None
-        for i in range(self.rank):
-            Zi = batch_quadratic(Zi, self.params[i], Z, X.shape[0], self.hiddens, self.hiddens)
-            Zi = self.BNZ(Zi)
-            if output is None:
-                output = Zi
-            else:
-                output = torch.cat((output, Zi), dim=1)
-        return self.output_layer(self.W2(X) + self.W3(output))
-
-
-class ApaFeatureNet(nn.Module):
+class SparseIntegratedNet(nn.Module):
     def __init__(self, pretrainPath, device, **kwargs):
-        super(ApaFeatureNet, self).__init__(**kwargs)
+        super(SparseIntegratedNet, self).__init__(**kwargs)
         self.featureExtraction = torch.load(pretrainPath, map_location=device, weights_only=False)
         self.flatten = nn.Flatten()
-        self.APA = ApaBlock(1024, 128, 1024, 5)
+        self.BB = SparseIntegratedBlock.BroadenBlock(1, 1024, 32)
+        self.IB = SparseIntegratedBlock.IntegratedBlock(32, 3, 16, 32)
+        self.SB = SparseIntegratedBlock.SparseBlock(32, 16, 3)
         self.classifier = nn.Sequential(
+            nn.Flatten(),
             nn.Linear(1024, 1536),
             nn.ReLU(), nn.Dropout(0.25),
             nn.Linear(1536, 1536),
@@ -147,7 +110,11 @@ class ApaFeatureNet(nn.Module):
 
     def forward(self, X):
         F = self.flatten(self.featureExtraction(X))
-        return self.classifier(self.APA(F))
+        F = self.BB(torch.unsqueeze(F, dim=1))
+        output1 = self.IB(F)
+        output2 = self.SB(F)
+        output = torch.cat((output1, output2), dim=1)
+        return self.classifier(output)
 
 
 def accuracy(y_hat, y):
@@ -168,7 +135,7 @@ def evaluate(net, data_iter, device):
 
 
 def init_weights(m):
-    if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
+    if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d) or isinstance(m, nn.Conv1d):
         nn.init.xavier_uniform_(m.weight)
 
 
@@ -226,7 +193,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, nargs='?', default=256)
     parser.add_argument('--phase', type=int, nargs='?', default=0)
     parser.add_argument('--model_path', type=str, nargs='?', default='FeatureExtraction.pth')
-    parser.add_argument('--model_path2', type=str, nargs='?', default='ApaFeatureNet.pth')
+    parser.add_argument('--model_path2', type=str, nargs='?', default='SparseInteractiveNet.pth')
     args = parser.parse_args()
 
     train_iter, valid_iter = load_data_cifar_100(args.batch_size, None)
@@ -238,14 +205,14 @@ if __name__ == '__main__':
         torch.save(net.Feature, 'FeatureExtraction.pth')
         write_info(info, 'Pretrain_output.txt')
     elif args.phase == 1:
-        net2 = ApaFeatureNet(args.model_path, try_gpu(args.cuda_idx))
-        best_net2, info2 = train(net2, args.lr / 3, args.num_epochs // 3, args.weight_decay,
+        net2 = SparseIntegratedNet(args.model_path, try_gpu(args.cuda_idx))
+        best_net2, info2 = train(net2, args.lr, args.num_epochs, args.weight_decay,
                                  train_iter, valid_iter, try_gpu(args.cuda_idx))
-        torch.save(net2, 'ApaFeatureNet.pth')
+        torch.save(net2, 'SparseIntegratedNet.pth')
         write_info(info2, 'train_output.txt')
     else:
         net3 = torch.load(args.model_path2, map_location=try_gpu(args.cuda_idx))
-        best_net3, info3 = train(net3, args.lr / 50, args.num_epochs // 3, args.weight_decay,
+        best_net3, info3 = train(net3, args.lr / 10, args.num_epochs // 3, args.weight_decay,
                                  train_iter, valid_iter, try_gpu(args.cuda_idx))
-        torch.save(net3, 'ApaFeatureNet.pth')
+        torch.save(net3, 'SparseIntegratedNet.pth')
         write_info(info3, 'train_output.txt')
